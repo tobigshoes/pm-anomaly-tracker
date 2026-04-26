@@ -241,14 +241,18 @@ def push_alert(market: dict):
 def fetch_whale_leaderboard(top_n: int) -> list[dict]:
     """
     Polymarket Data API leaderboard.
-    Tries multiple endpoint / param variants for robustness.
+    Correct param is `period` (not `window`), and `startDate` style periods.
+    Falls back through multiple variants for resilience.
     """
-    # Try 1: data-api /leaderboard with window + sortBy
     endpoints_to_try = [
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "window": "all",     "sortBy": "PROFIT"}),
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "window": "allTime", "sortBy": "PROFIT"}),
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "sortBy": "PROFIT"}),
+        # Confirmed working variants (period-based, not window-based)
+        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "all",     "sortBy": "PROFIT"}),
+        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "allTime", "sortBy": "PROFIT"}),
+        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "month",   "sortBy": "PROFIT"}),
         (f"{DATA_API}/leaderboard",  {"limit": top_n}),
+        # Gamma API also has a leaderboard endpoint
+        (f"{GAMMA_API}/leaderboard", {"limit": top_n, "sortBy": "PROFIT"}),
+        (f"{GAMMA_API}/leaderboard", {"limit": top_n}),
     ]
 
     data = None
@@ -310,20 +314,28 @@ def fetch_whale_leaderboard(top_n: int) -> list[dict]:
 def fetch_whale_activity(wallet: dict, min_usd: float, seen: list) -> list[dict]:
     """
     Fetch recent trades for one wallet.
-    Polymarket /activity returns size in tokens; USD = size * price.
+    Uses /trades endpoint (confirmed) with /activity as fallback.
+    size = tokens, price = USDC/token, USD value = size * price.
     """
-    try:
-        r = requests.get(
-            f"{DATA_API}/activity",
-            params={"user": wallet["address"], "limit": 25, "type": "TRADE"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        raw = r.json()
-        # Response may be a list or {"data":[...]}
-        trades = raw if isinstance(raw, list) else raw.get("data", raw.get("activity", []))
-    except Exception as e:
-        dlog(f"Activity fetch failed for {wallet['address'][:10]}: {e}")
+    trades = []
+    # Try /trades first (confirmed endpoint per cheatsheet), then /activity as fallback
+    for endpoint, params in [
+        (f"{DATA_API}/trades",   {"user": wallet["address"], "limit": 25}),
+        (f"{DATA_API}/activity", {"user": wallet["address"], "limit": 25, "type": "TRADE"}),
+    ]:
+        try:
+            r = requests.get(endpoint, params=params, timeout=10)
+            r.raise_for_status()
+            raw = r.json()
+            trades = raw if isinstance(raw, list) else raw.get("data", raw.get("activity", []))
+            if trades:
+                dlog(f"Trades from {endpoint.split('/')[-1]} for {wallet['address'][:8]}: {len(trades)}")
+                break
+        except Exception as e:
+            dlog(f"Trade fetch failed ({endpoint.split('/')[-1]}) {wallet['address'][:8]}: {e}")
+            continue
+
+    if not trades:
         return []
 
     new_trades = []
