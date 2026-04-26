@@ -356,12 +356,16 @@ def fetch_whale_activity(wallet: dict, min_usd: float, seen: list) -> list[dict]
 
         ts_raw = t.get("timestamp")
         try:
-            ts_str = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc).strftime("%H:%M UTC") if ts_raw else "—"
+            ts_epoch = int(ts_raw) if ts_raw else 0
+            ts_dt    = datetime.fromtimestamp(ts_epoch, tz=timezone.utc)
+            ts_str   = ts_dt.strftime("%b %d %Y · %H:%M UTC") if ts_epoch else "—"
         except Exception:
-            ts_str = "—"
+            ts_epoch = 0
+            ts_str   = "—"
 
         new_trades.append({
             "ts":       ts_str,
+            "ts_epoch": ts_epoch,
             "platform": "Polymarket",
             "wallet":   wallet["address"],
             "name":     wallet["name"],
@@ -695,14 +699,61 @@ with tab_whale:
                 f"No trades above ${st.session_state.whale_min_usd:,.0f} found yet. "
                 f"Try lowering the min trade size in the sidebar, or scan again.")
     else:
-        size_opts = {"All": 0, "$1K+": 1000, "$5K+": 5000, "$10K+": 10000,
+        # Size filter shared across all time tabs
+        size_opts = {"All sizes": 0, "$1K+": 1000, "$5K+": 5000, "$10K+": 10000,
                      "$25K+": 25000, "$50K+": 50000, "$100K+": 100000}
-        size_choice = st.selectbox("Show trades above:", list(size_opts.keys()), index=2)
-        cutoff   = size_opts[size_choice]
-        filtered = [t for t in st.session_state.whale_trades if t["size_usd"] >= cutoff]
-        st.markdown(f"**{len(filtered)} trade(s)** above {size_choice}")
-        for t in filtered:
-            render_whale_trade(t)
+        size_choice = st.selectbox("Minimum trade size:", list(size_opts.keys()), index=0)
+        min_size = size_opts[size_choice]
+
+        # Time window definitions (epoch cutoffs)
+        now_ts = int(time.time())
+        time_windows = {
+            "24h":  now_ts - 86_400,
+            "30d":  now_ts - 30  * 86_400,
+            "60d":  now_ts - 60  * 86_400,
+            "120d": now_ts - 120 * 86_400,
+            "365d": now_ts - 365 * 86_400,
+            "All":  0,
+        }
+
+        wt1, wt2, wt3, wt4, wt5, wt6 = st.tabs([
+            "⚡ Past 24h", "📅 Past 30d", "📅 Past 60d",
+            "📅 Past 120d", "📅 Past 365d", "🗂 All Time",
+        ])
+
+        def render_whale_window(cutoff_epoch, label):
+            trades = st.session_state.whale_trades
+            filtered = [
+                t for t in trades
+                if t["size_usd"] >= min_size
+                and (cutoff_epoch == 0 or t.get("ts_epoch", 0) >= cutoff_epoch)
+            ]
+            filtered.sort(key=lambda x: x.get("ts_epoch", 0), reverse=True)
+
+            if not filtered:
+                st.info(f"No trades in {label} above {size_choice}. Try a wider window or lower the size filter.")
+                return
+
+            total_usd = sum(t["size_usd"] for t in filtered)
+            buy_usd   = sum(t["size_usd"] for t in filtered if t["side"] == "BUY")
+            sell_usd  = sum(t["size_usd"] for t in filtered if t["side"] == "SELL")
+            mega      = sum(1 for t in filtered if t["size_usd"] >= MEGA_WHALE_USD)
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Trades",         len(filtered))
+            mc2.metric("Total volume",   f"${total_usd:,.0f}")
+            mc3.metric("▲ Buy / ▼ Sell", f"${buy_usd:,.0f} / ${sell_usd:,.0f}")
+            mc4.metric("🐳 Mega",        mega)
+            st.markdown("---")
+            for t in filtered:
+                render_whale_trade(t)
+
+        with wt1: render_whale_window(time_windows["24h"],  "past 24h")
+        with wt2: render_whale_window(time_windows["30d"],  "past 30 days")
+        with wt3: render_whale_window(time_windows["60d"],  "past 60 days")
+        with wt4: render_whale_window(time_windows["120d"], "past 120 days")
+        with wt5: render_whale_window(time_windows["365d"], "past 365 days")
+        with wt6: render_whale_window(time_windows["All"],  "all time")
 
     st.markdown("---")
     st.caption("ℹ Kalshi does not expose public trader data. "
