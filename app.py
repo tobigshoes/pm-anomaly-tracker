@@ -699,13 +699,59 @@ with tab_whale:
                 f"No trades above ${st.session_state.whale_min_usd:,.0f} found yet. "
                 f"Try lowering the min trade size in the sidebar, or scan again.")
     else:
-        # Size filter shared across all time tabs
-        size_opts = {"All sizes": 0, "$1K+": 1000, "$5K+": 5000, "$10K+": 10000,
-                     "$25K+": 25000, "$50K+": 50000, "$100K+": 100000}
-        size_choice = st.selectbox("Minimum trade size:", list(size_opts.keys()), index=0)
-        min_size = size_opts[size_choice]
+        # ── FILTER CONTROLS ──────────────────────────────────────
+        with st.expander("🔧 Filters & Sort", expanded=True):
+            fc1, fc2, fc3 = st.columns(3)
 
-        # Time window definitions (epoch cutoffs)
+            with fc1:
+                st.markdown("**Min trade size**")
+                size_opts = {"All sizes": 0, "$1K+": 1_000, "$5K+": 5_000,
+                             "$10K+": 10_000, "$25K+": 25_000,
+                             "$50K+": 50_000, "$100K+": 100_000}
+                size_choice = st.selectbox("Min size", list(size_opts.keys()),
+                                           index=0, label_visibility="collapsed")
+                min_size = size_opts[size_choice]
+
+                st.markdown("**Max trade size**")
+                max_size_opts = {"No limit": None, "Under $10K": 10_000,
+                                 "Under $25K": 25_000, "Under $50K": 50_000,
+                                 "Under $100K": 100_000}
+                max_size_choice = st.selectbox("Max size", list(max_size_opts.keys()),
+                                               index=0, label_visibility="collapsed")
+                max_size = max_size_opts[max_size_choice]
+
+            with fc2:
+                st.markdown("**Direction**")
+                side_filter = st.radio("Direction", ["All", "BUY only", "SELL only"],
+                                       horizontal=True, label_visibility="collapsed")
+
+                st.markdown("**Sort by**")
+                sort_by = st.radio("Sort", ["💰 Largest first", "💸 Smallest first",
+                                            "🕐 Newest first", "🕑 Oldest first"],
+                                   label_visibility="collapsed")
+
+            with fc3:
+                st.markdown("**Trader rank**")
+                rank_min = st.number_input("Min rank", min_value=1,
+                                           max_value=500, value=1, step=1)
+                rank_max = st.number_input("Max rank", min_value=1,
+                                           max_value=500, value=500, step=1)
+
+                st.markdown("**Search market title**")
+                title_search = st.text_input("Market keyword",
+                                             placeholder="e.g. election, bitcoin",
+                                             label_visibility="collapsed")
+
+        # ── SORT KEY ─────────────────────────────────────────────
+        sort_map = {
+            "💰 Largest first":  (lambda x: x["size_usd"],      True),
+            "💸 Smallest first": (lambda x: x["size_usd"],      False),
+            "🕐 Newest first":   (lambda x: x.get("ts_epoch",0), True),
+            "🕑 Oldest first":   (lambda x: x.get("ts_epoch",0), False),
+        }
+        sort_key, sort_rev = sort_map[sort_by]
+
+        # ── TIME WINDOWS ─────────────────────────────────────────
         now_ts = int(time.time())
         time_windows = {
             "24h":  now_ts - 86_400,
@@ -721,30 +767,59 @@ with tab_whale:
             "📅 Past 120d", "📅 Past 365d", "🗂 All Time",
         ])
 
+        def apply_filters(cutoff_epoch):
+            """Apply all active filters and return sorted list."""
+            result = []
+            for t in st.session_state.whale_trades:
+                # Time window
+                if cutoff_epoch > 0 and t.get("ts_epoch", 0) < cutoff_epoch:
+                    continue
+                # Min size
+                if t["size_usd"] < min_size:
+                    continue
+                # Max size
+                if max_size is not None and t["size_usd"] > max_size:
+                    continue
+                # Direction
+                if side_filter == "BUY only"  and t["side"] != "BUY":
+                    continue
+                if side_filter == "SELL only" and t["side"] != "SELL":
+                    continue
+                # Rank range
+                r = t.get("rank", 0)
+                if r < rank_min or r > rank_max:
+                    continue
+                # Title keyword
+                if title_search and title_search.lower() not in t.get("title","").lower():
+                    continue
+                result.append(t)
+
+            result.sort(key=sort_key, reverse=sort_rev)
+            return result
+
         def render_whale_window(cutoff_epoch, label):
-            trades = st.session_state.whale_trades
-            filtered = [
-                t for t in trades
-                if t["size_usd"] >= min_size
-                and (cutoff_epoch == 0 or t.get("ts_epoch", 0) >= cutoff_epoch)
-            ]
-            filtered.sort(key=lambda x: x.get("ts_epoch", 0), reverse=True)
+            filtered = apply_filters(cutoff_epoch)
 
             if not filtered:
-                st.info(f"No trades in {label} above {size_choice}. Try a wider window or lower the size filter.")
+                st.info(f"No trades match your filters in {label}. "
+                        f"Try adjusting size, direction, or rank filters above.")
                 return
 
+            # Summary metrics
             total_usd = sum(t["size_usd"] for t in filtered)
             buy_usd   = sum(t["size_usd"] for t in filtered if t["side"] == "BUY")
             sell_usd  = sum(t["size_usd"] for t in filtered if t["side"] == "SELL")
             mega      = sum(1 for t in filtered if t["size_usd"] >= MEGA_WHALE_USD)
+            avg_size  = total_usd / len(filtered) if filtered else 0
 
-            mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("Trades",         len(filtered))
-            mc2.metric("Total volume",   f"${total_usd:,.0f}")
-            mc3.metric("▲ Buy / ▼ Sell", f"${buy_usd:,.0f} / ${sell_usd:,.0f}")
-            mc4.metric("🐳 Mega",        mega)
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("Trades",          len(filtered))
+            mc2.metric("Total volume",    f"${total_usd:,.0f}")
+            mc3.metric("Avg trade",       f"${avg_size:,.0f}")
+            mc4.metric("▲ Buy / ▼ Sell",  f"${buy_usd:,.0f} / ${sell_usd:,.0f}")
+            mc5.metric("🐳 Mega trades",  mega)
             st.markdown("---")
+
             for t in filtered:
                 render_whale_trade(t)
 
