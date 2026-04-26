@@ -244,15 +244,13 @@ def fetch_whale_leaderboard(top_n: int) -> list[dict]:
     Correct param is `period` (not `window`), and `startDate` style periods.
     Falls back through multiple variants for resilience.
     """
+    # Confirmed URL: /v1/leaderboard (not /leaderboard)
+    # Params: timePeriod=(ALL|MONTH|WEEK|DAY), orderBy=(PNL|VOLUME), category=OVERALL
     endpoints_to_try = [
-        # Confirmed working variants (period-based, not window-based)
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "all",     "sortBy": "PROFIT"}),
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "allTime", "sortBy": "PROFIT"}),
-        (f"{DATA_API}/leaderboard",  {"limit": top_n, "period": "month",   "sortBy": "PROFIT"}),
-        (f"{DATA_API}/leaderboard",  {"limit": top_n}),
-        # Gamma API also has a leaderboard endpoint
-        (f"{GAMMA_API}/leaderboard", {"limit": top_n, "sortBy": "PROFIT"}),
-        (f"{GAMMA_API}/leaderboard", {"limit": top_n}),
+        (f"{DATA_API}/v1/leaderboard", {"limit": top_n, "timePeriod": "ALL",   "orderBy": "PNL", "category": "OVERALL"}),
+        (f"{DATA_API}/v1/leaderboard", {"limit": top_n, "timePeriod": "MONTH", "orderBy": "PNL", "category": "OVERALL"}),
+        (f"{DATA_API}/v1/leaderboard", {"limit": top_n, "timePeriod": "ALL",   "orderBy": "PNL"}),
+        (f"{DATA_API}/v1/leaderboard", {"limit": top_n}),
     ]
 
     data = None
